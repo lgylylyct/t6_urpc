@@ -19,8 +19,8 @@ import matplotlib.pyplot as plt
 class BaseDataSets(Dataset):
     def __init__(
         self,
-        base_dir=None,
-        nii_dir=None,
+        base_img_dir=None,
+        base_mask_dir=None,
         mod="T1C",
         split="train",
         label_mod_type="T1C_mask",
@@ -29,8 +29,8 @@ class BaseDataSets(Dataset):
         ops_weak=None,
         ops_strong=None,
     ):
-        self._base_dir = base_dir
-        self._base_nii_dir = nii_dir
+        self.base_img_dir = base_img_dir
+        self.base_mask_dir = base_mask_dir
         self.mod = mod
         self.sample_list = []
         self.split = split
@@ -45,12 +45,14 @@ class BaseDataSets(Dataset):
         ), "For using CTAugment learned policies, provide both weak and strong batch augmentation policy"
 
         self.sample_list = [[], []]
-        for patient_id in os.listdir(self._base_dir):
+        for patient_id in os.listdir(self.base_img_dir):
             self.sample_list[0].append(
-                os.path.join(self._base_dir, patient_id, self.mod + ".npy")
+                os.path.join(self.base_img_dir, patient_id, self.mod + ".npy")
             )
             self.sample_list[1].append(
-                os.path.join(self._base_dir, patient_id, self.label_mod_type + ".npy")
+                os.path.join(
+                    self.base_mask_dir, patient_id, self.mod, self.label_mod_type + ".npy"
+                )
             )
 
         # if self.split == "train":
@@ -85,25 +87,41 @@ class BaseDataSets(Dataset):
         label_3d = torch.from_numpy(label)
 
         # select slice
-        if self.split == 'train':
+        if self.split == "train":
+            temp = 0
             while True:
                 z = np.random.randint(image_3d.shape[0])
-                if label_3d[z,:, :].sum()!=0:
+                if label_3d[z, :, :].sum() != 0:
+                    break
+                temp += 1
+                if temp > 20:
                     break
             image = image_3d[z, :, :]
-            label = label_3d[z,:, :]
+            label = label_3d[z, :, :]
         else:
             image = image_3d
             label = label_3d
+
+            temp = label.sum(axis=(1, 2))
+            d1 = -1
+            d2 = -1
+            for dd in range(len(temp)):
+                if temp[dd] != 0:
+                    if d1 == -1:
+                        d1 = dd
+                    d2 = dd
             
-        sample = {"image": image, "label": label,'idx':idx}
-        
+            image = image[d1:d2+1]
+            label = label[d1:d2+1]
+
+        sample = {"image": image, "label": label, "idx": idx}
+
         if self.split == "train":
             if None not in (self.ops_weak, self.ops_strong):
                 sample = self.transform(sample, self.ops_weak, self.ops_strong)
             else:
                 sample = self.transform(sample)
-        
+
         return sample
 
 
@@ -122,8 +140,8 @@ def random_rot_flip(image, label=None):
 
 def random_rotate(image, label):
     angle = np.random.randint(-20, 20)
-    image = ndimage.rotate(image, angle, order=0, reshape=False)
-    label = ndimage.rotate(label, angle, order=0, reshape=False)
+    image = ndimage.rotate(image, angle, order=3, reshape=False, mode="nearest")
+    label = ndimage.rotate(label, angle, order=3, reshape=False, mode="nearest")
     return image, label
 
 

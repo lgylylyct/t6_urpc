@@ -1,0 +1,23 @@
+{
+    "exp": "sup",
+    "semi_sup": false,
+    "device": "cpu",
+    "img_path": "I:/linguoyu/DataSet/NPCICDataset/zhongshan1/005_ToNumpy",
+    "mask_path": "I:/linguoyu/DataSet/NPCICDataset/zhongshan1/803_GT_R_Resample_numpy",
+    "number_worker": 0,
+    "model": "unet_urpc",
+    "max_iterations": 30000,
+    "batch_size": 8,
+    "deterministic": 1,
+    "base_lr": 0.01,
+    "patch_size": [
+        192,
+        192
+    ],
+    "seed": 1337,
+    "num_classes": 2,
+    "labeled_bs": 4,
+    "labeled_num": 7,
+    "consistency": 0.1,
+    "consistency_rampup": 200.0
+}

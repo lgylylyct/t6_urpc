@@ -5,9 +5,16 @@ import sys
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
+
+
+########## Set The WorkSpace Path ##########
+dirname, filename = os.path.split(os.path.abspath(__file__))
+os.chdir(dirname)
+print("The Current WorkPlace: {}".format(os.getcwd()))
+
 import random
-import shutil
-import sys
+import shutil, platform
+import sys, json
 import time
 
 import numpy as np
@@ -16,7 +23,8 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from tensorboardX import SummaryWriter
+
+# from tensorboardX import SummaryWriter
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
@@ -34,54 +42,6 @@ from Untils.utils import create_logger
 
 import _Debug
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--root_path",
-    type=str,
-    default="I:/linguoyu/DataSet/NPCICDataset/zhongshan1/113_ToNumpy_T1C",
-    help="Name of Experiment",
-)
-parser.add_argument(
-    "--nii_path",
-    type=str,
-    default="I:/linguoyu/DataSet/NPCICDataset/zhongshan1/113_ToNumpy_T1C",
-    help="Name of the nii path",
-)
-parser.add_argument(
-    "--exp",
-    type=str,
-    default="NPC/Uncertainty_Rectified_Pyramid_Consistency",
-    help="experiment_name",
-)
-parser.add_argument("--model", type=str, default="unet_urpc", help="model_name")
-parser.add_argument(
-    "--max_iterations", type=int, default=30000, help="maximum epoch number to train"
-)
-parser.add_argument("--batch_size", type=int, default=4, help="batch_size per gpu")
-parser.add_argument(
-    "--deterministic", type=int, default=1, help="whether use deterministic training"
-)
-parser.add_argument(
-    "--base_lr", type=float, default=0.01, help="segmentation network learning rate"
-)
-parser.add_argument(
-    "--patch_size", type=list, default=[192, 192], help="patch size of network input"
-)
-parser.add_argument("--seed", type=int, default=1337, help="random seed")
-parser.add_argument("--num_classes", type=int, default=2, help="output channel of network")
-
-# label and unlabel
-parser.add_argument("--labeled_bs", type=int, default=2, help="labeled_batch_size per gpu")
-parser.add_argument("--labeled_num", type=int, default=7, help="labeled data")
-# costs
-parser.add_argument("--consistency", type=float, default=0.1, help="consistency")
-parser.add_argument(
-    "--consistency_rampup", type=float, default=200.0, help="consistency_rampup"
-)
-args = parser.parse_args()
-device = 'cpu'
 
 def patients_to_slices(dataset, patiens_num):
     if "NPC" in dataset:
@@ -97,19 +57,34 @@ def get_current_consistency_weight(epoch):
 
 
 def train(args, snapshot_path):
+    # set infomation logger
+    info_logger_path = os.path.join(snapshot_path, "info.log")
+
+    info_logger = logging.Logger("GFBExp")
+    info_logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    print_headler = logging.StreamHandler()
+    file_headler = logging.FileHandler(info_logger_path, mode="w", encoding="utf-8",)
+    print_headler.setLevel(logging.DEBUG)
+    file_headler.setLevel(logging.DEBUG)
+    print_headler.setFormatter(formatter)
+    file_headler.setFormatter(formatter)
+    info_logger.addHandler(print_headler)
+    info_logger.addHandler(file_headler)
+
+    print("information of logger:", info_logger_path)
+    info_logger.info("is semi-supervised exp: {}".format(args.semi_sup))
+
     ######## arg ##########
     base_lr = args.base_lr
     num_classes = args.num_classes
     batch_size = args.batch_size
     max_iterations = args.max_iterations
-    logger = create_logger(config.LOG.OUT_DIR, config.LOGFILE)
-    writer = SummaryWriter(snapshot_path + "/log")
-    
 
     ########## dataset ##########
     db_train = BaseDataSets(
-        base_dir=args.root_path,
-        nii_dir=args.nii_path,
+        base_img_dir=args.img_path,
+        base_mask_dir=args.mask_path,
         mod="T1C",
         label_mod_type="T1C_mask",
         split="train",
@@ -117,63 +92,70 @@ def train(args, snapshot_path):
         transform=transforms.Compose([RandomGenerator(args.patch_size)]),
     )
     db_val = BaseDataSets(
-        base_dir=args.root_path,
-        nii_dir=args.nii_path,
+        base_img_dir=args.img_path,
+        base_mask_dir=args.mask_path,
         mod="T1C",
         label_mod_type="T1C_mask",
         split="val",
     )
-    
-    total_slices = len(db_train)
-    labeled_slice = 200
-    print("Total silices is: {}, labeled slices is: {}".format(total_slices, labeled_slice))
-    labeled_idxs = list(range(0, labeled_slice))
-    unlabeled_idxs = list(range(labeled_slice, total_slices))
+
+    info_logger.info(
+        "Total training data number is: {}, labeled training dat number is: {}".format(
+            len(db_train), args.labeled_num
+        )
+    )
+    labeled_idxs = list(range(0, args.labeled_num))
+    unlabeled_idxs = list(range(args.labeled_num, len(db_train)))
     batch_sampler = TwoStreamBatchSampler(
         labeled_idxs, unlabeled_idxs, batch_size, batch_size - args.labeled_bs
     )
-    
+
     def worker_init_fn(worker_id):
         random.seed(args.seed + worker_id)
-        
+
     trainloader = DataLoader(
         db_train,
         batch_sampler=batch_sampler,
-        num_workers=0,
-        pin_memory=True,
+        num_workers=args.number_worker,
+        pin_memory=False,
         worker_init_fn=worker_init_fn,
         shuffle=False,
     )
-    valloader = DataLoader(db_val, batch_size=1, shuffle=False, num_workers=0)
-    logging.info("{} iterations per epoch".format(len(trainloader)))
-    logger.info("{} iterations per epoch".format(len(trainloader)))
-    
+    valloader = DataLoader(db_val, batch_size=1, shuffle=False, num_workers=args.number_worker)
+    info_logger.info("{} iterations per epoch".format(len(trainloader)))
 
     ########## model ##########
     model = net_factory(net_type=args.model, in_chns=1, class_num=num_classes)
-    model = model.to(device)
-    
+    model = model.to(args.device)
+
     ########## optimizer ##########
     optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
-    
+
     ########## loss function ##########
     kl_distance = nn.KLDivLoss(reduction="none")
     ce_loss = CrossEntropyLoss()
     dice_loss = losses.DiceLoss(num_classes)
 
-
     ########## traning ##########
     iter_num = 0
-    max_epoch = max_iterations // len(trainloader) + 1
+    max_epoch = max_iterations // len(trainloader)
     best_performance = 0.0
-    iterator = tqdm(range(max_epoch), ncols=70)
-    for epoch_num in iterator:
-        print(f"Epoch {epoch_num + 1}")
+    for epoch_num in range(max_epoch):
+        consistency_weight = get_current_consistency_weight(epoch_num)
+
         model.train()
+        list_loss = []
+        list_loss_ce = []
+        list_loss_dice = []
+        list_loss_consistency = []
+
         for i_batch, sampled_batch in enumerate(trainloader):
             volume_batch, label_batch = sampled_batch["image"], sampled_batch["label"]
-            volume_batch, label_batch = volume_batch.to(device), label_batch.to(device)
-            _Debug.checkImageMatrix({"volume_batch":volume_batch,"label_batch":label_batch})
+            volume_batch, label_batch = (
+                volume_batch.to(args.device),
+                label_batch.to(args.device),
+            )
+            # _Debug.checkImageMatrix({"volume_batch": volume_batch, "label_batch": label_batch})
 
             outputs, outputs_aux1, outputs_aux2, outputs_aux3 = model(volume_batch)
             outputs_soft = torch.softmax(outputs, dim=1)
@@ -181,6 +163,7 @@ def train(args, snapshot_path):
             outputs_aux2_soft = torch.softmax(outputs_aux2, dim=1)
             outputs_aux3_soft = torch.softmax(outputs_aux3, dim=1)
 
+            # CE loss -- supervised
             loss_ce = ce_loss(
                 outputs[: args.labeled_bs], label_batch[: args.labeled_bs][:].long()
             )
@@ -194,6 +177,7 @@ def train(args, snapshot_path):
                 outputs_aux3[: args.labeled_bs], label_batch[: args.labeled_bs][:].long()
             )
 
+            # Dice loss -- supervised
             loss_dice = dice_loss(
                 outputs_soft[: args.labeled_bs], label_batch[: args.labeled_bs].unsqueeze(1)
             )
@@ -210,6 +194,7 @@ def train(args, snapshot_path):
                 label_batch[: args.labeled_bs].unsqueeze(1),
             )
 
+            # overall loss -- supervised
             supervised_loss = (
                 loss_ce
                 + loss_ce_aux1
@@ -221,51 +206,43 @@ def train(args, snapshot_path):
                 + loss_dice_aux3
             ) / 8
 
+            # preds is the average of all segementation
             preds = (
                 outputs_soft + outputs_aux1_soft + outputs_aux2_soft + outputs_aux3_soft
             ) / 4
 
-            variance_main = torch.sum(
-                kl_distance(
-                    torch.log(outputs_soft[args.labeled_bs :]), preds[args.labeled_bs :]
-                ),
-                dim=1,
-                keepdim=True,
+            # kl_distance --> variance --> exp variance -- unsupervised
+            kl_main = kl_distance(
+                torch.log(outputs_soft[args.labeled_bs :] + 1e-8), preds[args.labeled_bs :]
             )
+            variance_main = torch.sum(kl_main, dim=1, keepdim=True,)
             exp_variance_main = torch.exp(-variance_main)
 
-            variance_aux1 = torch.sum(
-                kl_distance(
-                    torch.log(outputs_aux1_soft[args.labeled_bs :]), preds[args.labeled_bs :]
-                ),
-                dim=1,
-                keepdim=True,
+            kl_aux1 = kl_distance(
+                torch.log(outputs_aux1_soft[args.labeled_bs :] + 1e-8),
+                preds[args.labeled_bs :],
             )
+            variance_aux1 = torch.sum(kl_aux1, dim=1, keepdim=True,)
             exp_variance_aux1 = torch.exp(-variance_aux1)
 
-            variance_aux2 = torch.sum(
-                kl_distance(
-                    torch.log(outputs_aux2_soft[args.labeled_bs :]), preds[args.labeled_bs :]
-                ),
-                dim=1,
-                keepdim=True,
+            kl_aux2 = kl_distance(
+                torch.log(outputs_aux2_soft[args.labeled_bs :] + 1e-8),
+                preds[args.labeled_bs :],
             )
+            variance_aux2 = torch.sum(kl_aux2, dim=1, keepdim=True,)
             exp_variance_aux2 = torch.exp(-variance_aux2)
 
-            variance_aux3 = torch.sum(
-                kl_distance(
-                    torch.log(outputs_aux3_soft[args.labeled_bs :]), preds[args.labeled_bs :]
-                ),
-                dim=1,
-                keepdim=True,
+            kl_aux3 = kl_distance(
+                torch.log(outputs_aux3_soft[args.labeled_bs :] + 1e-8),
+                preds[args.labeled_bs :],
             )
+            variance_aux3 = torch.sum(kl_aux3, dim=1, keepdim=True,)
             exp_variance_aux3 = torch.exp(-variance_aux3)
 
-            consistency_weight = get_current_consistency_weight(iter_num // 150)
+            # consistency -- L2 loss -- unsupervised
             consistency_dist_main = (
                 preds[args.labeled_bs :] - outputs_soft[args.labeled_bs :]
             ) ** 2
-
             consistency_loss_main = torch.mean(consistency_dist_main * exp_variance_main) / (
                 torch.mean(exp_variance_main) + 1e-8
             ) + torch.mean(variance_main)
@@ -297,7 +274,13 @@ def train(args, snapshot_path):
                 + consistency_loss_aux2
                 + consistency_loss_aux3
             ) / 4
-            loss = supervised_loss + consistency_weight * consistency_loss
+
+            # overall loss -- semi-supervised
+            if args.semi_sup:
+                loss = supervised_loss + consistency_weight * consistency_loss
+            else:
+                loss = supervised_loss
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -307,88 +290,163 @@ def train(args, snapshot_path):
                 param_group["lr"] = lr_
 
             iter_num = iter_num + 1
-            writer.add_scalar("info/lr", lr_, iter_num)
-            writer.add_scalar("info/total_loss", loss, iter_num)
-            writer.add_scalar("info/loss_ce", loss_ce, iter_num)
-            writer.add_scalar("info/loss_dice", loss_dice, iter_num)
-            writer.add_scalar("info/consistency_loss", consistency_loss, iter_num)
-            writer.add_scalar("info/consistency_weight", consistency_weight, iter_num)
-            logging.info(
-                "iteration %d : loss : %f, loss_ce: %f, loss_dice: %f"
-                % (iter_num, loss.item(), loss_ce.item(), loss_dice.item())
+
+            list_loss.append(loss.item())
+            list_loss_ce.append(loss_ce.item())
+            list_loss_dice.append(loss_dice.item())
+            list_loss_consistency.append(consistency_loss.item())
+
+            if (i_batch + 1) % (len(trainloader) // 4) == 0 or i_batch + 1 == len(trainloader):
+                pass
+
+            # break
+
+        info_logger.info(
+            "epoch_num %4d / %d : loss : %.4f, loss_ce: %.4f, loss_dice: %.4f, loss_consistency: %.4f, weight_consistency: %.4f"
+            % (
+                epoch_num + 1,
+                max_epoch,
+                np.mean(list_loss),
+                np.mean(list_loss_ce),
+                np.mean(list_loss_dice),
+                np.mean(list_loss_consistency),
+                consistency_weight,
             )
+        )
 
-            if iter_num % 20 == 0:
-                image = volume_batch[1, 0:1, :, :]
-                writer.add_image("train/Image", image, iter_num)
-                outputs = torch.argmax(torch.softmax(outputs, dim=1), dim=1, keepdim=True)
-                writer.add_image("train/Prediction", outputs[1, ...] * 50, iter_num)
-                labs = label_batch[1, ...].unsqueeze(0) * 50
-                writer.add_image("train/GroundTruth", labs, iter_num)
+        if (epoch_num + 1) % 20 != 0:
+            continue
 
-            if iter_num > 0 and iter_num % 1000 == 0:
-                model.eval()
-                metric_list = 0.0
-                for i_batch, sampled_batch in enumerate(valloader):
-                    metric_i = test_single_volume_ds(
-                        sampled_batch["image"],
-                        sampled_batch["label"],
-                        model,
-                        classes=num_classes,
-                        device=device,
-                    )
-                    metric_list += np.array(metric_i)
-                metric_list = metric_list / len(db_val)
-                for class_i in range(num_classes - 1):
-                    writer.add_scalar(
-                        "info/val_{}_dice".format(class_i + 1),
-                        metric_list[class_i, 0],
-                        iter_num,
-                    )
-                    writer.add_scalar(
-                        "info/val_{}_hd95".format(class_i + 1),
-                        metric_list[class_i, 1],
-                        iter_num,
-                    )
+        # validation
+        model.eval()
+        metric_list = 0.0
+        for i_batch, sampled_batch in enumerate(valloader):
+            metric_i = test_single_volume_ds(
+                sampled_batch["image"],
+                sampled_batch["label"],
+                model,
+                classes=num_classes,
+                device=args.device,
+            )
+            metric_list += np.array(metric_i)
 
-                performance = np.mean(metric_list, axis=0)[0]
+            if (i_batch + 1) % (len(valloader) // 4) == 0 or i_batch + 1 == len(valloader):
+                info_logger.info("val: {}/{}".format(i_batch + 1, len(valloader)))
+        metric_list = metric_list / len(valloader)
 
-                mean_hd95 = np.mean(metric_list, axis=0)[1]
-                writer.add_scalar("info/val_mean_dice", performance, iter_num)
-                writer.add_scalar("info/val_mean_hd95", mean_hd95, iter_num)
+        performance = np.mean(metric_list, axis=0)[0]
+        mean_hd95 = np.mean(metric_list, axis=0)[1]
 
-                if performance > best_performance:
-                    best_performance = performance
-                    save_mode_path = os.path.join(
-                        snapshot_path,
-                        "iter_{}_dice_{}.pth".format(iter_num, round(best_performance, 4)),
-                    )
-                    save_best = os.path.join(
-                        snapshot_path, "{}_best_model.pth".format(args.model)
-                    )
-                    torch.save(model.state_dict(), save_mode_path)
-                    torch.save(model.state_dict(), save_best)
+        if performance > best_performance:
+            best_performance = performance
+            save_mode_path = os.path.join(
+                snapshot_path, "iter_{:0>5}_dice_{:.4f}.pth".format(iter_num, best_performance),
+            )
+            save_best = os.path.join(snapshot_path, "{}_best_model.pth".format(args.model))
+            torch.save(model.state_dict(), save_mode_path)
+            torch.save(model.state_dict(), save_best)
 
-                logging.info(
-                    "iteration %d : mean_dice : %f mean_hd95 : %f"
-                    % (iter_num, performance, mean_hd95)
-                )
+        info_logger.info(
+            "iteration %d : mean_dice : %f mean_hd95 : %f \n"
+            % (iter_num, performance, mean_hd95)
+        )
 
-            if iter_num % 3000 == 0:
-                save_mode_path = os.path.join(snapshot_path, "iter_" + str(iter_num) + ".pth")
-                torch.save(model.state_dict(), save_mode_path)
-                logging.info("save model to {}".format(save_mode_path))
+        # if iter_num % 3000 == 0:
+        #     save_mode_path = os.path.join(snapshot_path, "iter_" + str(iter_num) + ".pth")
+        #     torch.save(model.state_dict(), save_mode_path)
+        #     info_logger.info("save model to {}".format(save_mode_path))
 
-            if iter_num >= max_iterations:
-                break
-        if iter_num >= max_iterations:
-            iterator.close()
-            break
-    writer.close()
     return "Training Finished!"
 
 
 if __name__ == "__main__":
+    # /public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train_urpc4.py
+
+    # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+    parser = argparse.ArgumentParser()
+
+    # sup
+    # parser.add_argument(
+    #     "--exp", type=str, default="sup", help="Experiment Name",
+    # )
+    # parser.add_argument("--semi_sup", type=bool, default=False)
+
+    # semi_sup
+    parser.add_argument(
+        "--exp", type=str, default="semi_sup_100", help="Experiment Name",
+    )
+    parser.add_argument("--semi_sup", type=bool, default=True)
+
+    if platform.system() == "Windows":
+        parser.add_argument("--device", type=str, default="cpu")
+        parser.add_argument(
+            "--img_path",
+            type=str,
+            default="I:/linguoyu/DataSet/NPCICDataset/zhongshan1/005_ToNumpy",
+            help="Name of Experiment",
+        )
+        parser.add_argument(
+            "--mask_path",
+            type=str,
+            default="I:/linguoyu/DataSet/NPCICDataset/zhongshan1/803_GT_R_Resample_numpy",
+            help="Name of the nii path",
+        )
+        parser.add_argument("--number_worker", type=int, default=0)
+    elif platform.system() == "Linux":
+        parser.add_argument("--device", type=str, default="cuda:1")
+        parser.add_argument(
+            "--img_path",
+            type=str,
+            default="/public/linguoyu/PythonProgramme/DataSet/NPCIC/zhongshan1/005_ToNumpy",
+            help="Name of Experiment",
+        )
+        parser.add_argument(
+            "--mask_path",
+            type=str,
+            default="/public/linguoyu/PythonProgramme/DataSet/NPCIC/zhongshan1/803_GT_R_Resample_numpy",
+            help="Name of the nii path",
+        )
+        parser.add_argument("--number_worker", type=int, default=0)
+
+    parser.add_argument("--model", type=str, default="unet_urpc", help="model_name")
+    parser.add_argument(
+        "--max_iterations", type=int, default=30000, help="maximum epoch number to train"
+    )
+    parser.add_argument("--batch_size", type=int, default=8, help="batch_size per gpu")
+    parser.add_argument(
+        "--deterministic", type=int, default=1, help="whether use deterministic training"
+    )
+    parser.add_argument(
+        "--base_lr", type=float, default=0.01, help="segmentation network learning rate"
+    )
+    parser.add_argument(
+        "--patch_size", type=list, default=[192, 192], help="patch size of network input"
+    )
+    parser.add_argument("--seed", type=int, default=1337, help="random seed")
+    parser.add_argument("--num_classes", type=int, default=2, help="output channel of network")
+
+    # label and unlabel
+    parser.add_argument("--labeled_bs", type=int, default=4, help="labeled_batch_size per gpu")
+    parser.add_argument("--labeled_num", type=int, default=60, help="labeled data")
+
+    # costs
+    parser.add_argument("--consistency", type=float, default=10.0, help="consistency")
+    parser.add_argument(
+        "--consistency_rampup", type=float, default=100.0, help="consistency_rampup"
+    )
+
+    args = parser.parse_args()
+
+    snapshot_path = "output_dir/{}".format(args.exp)
+    if not os.path.exists(snapshot_path):
+        os.makedirs(snapshot_path)
+
+    info_args_path = os.path.join(snapshot_path, "arg.txt")
+    with open(info_args_path, "w") as file:
+        file.write(json.dumps(args.__dict__, indent=4))
+    print("information of args:", info_args_path)
+
     if not args.deterministic:
         cudnn.benchmark = True
         cudnn.deterministic = False
@@ -401,21 +459,4 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    snapshot_path = "../ResultX/{}".format(args.exp, args.model)
-    if not os.path.exists(snapshot_path):
-        os.makedirs(snapshot_path)
-    # if os.path.exists(snapshot_path + "/code"):
-    #     shutil.rmtree(snapshot_path + "/code")
-    # shutil.copytree(
-    #     ".", snapshot_path + "/code", shutil.ignore_patterns([".git", "__pycache__"])
-    # )
-
-    logging.basicConfig(
-        filename=snapshot_path + "/log.txt",
-        level=logging.INFO,
-        format="[%(asctime)s.%(msecs)03d] %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
-    logging.info(str(args))
     train(args, snapshot_path)
