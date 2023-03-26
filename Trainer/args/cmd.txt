@@ -1,0 +1,16 @@
+# about net
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=Sup_SwinUNETR_T1C --device="cuda:1"
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=SemiSup_SwinUNETR_T1C --device="cuda:1"
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=Sup_SwinUNETR_T2 --device="cuda:0"
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=SemiSup_SwinUNETR_T2 --device="cuda:0"
+
+# about data
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=Sup_Unet_T1C_D6_W1 --device="cuda:1"
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=Sup_Unet_T2_D6_W1 --device="cuda:1"
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=SemiSup_Unet_T1C_D6_W1 --device="cuda:3"
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=SemiSup_Unet_T2_D6_W1 --device="cuda:3"
+
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=Sup_SwinUNETR_T1C_D6_W1 --device="cuda:2"
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=Sup_SwinUNETR_T2_D6_W1 --device="cuda:2"
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=SemiSup_SwinUNETR_T1C_D6_W1 --device="cuda:3"
+/public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train.py --arg=SemiSup_SwinUNETR_T2_D6_W1 --device="cuda:3"

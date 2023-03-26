@@ -4,15 +4,20 @@ from medpy import metric
 from scipy.ndimage import zoom
 import _Debug
 
+
 def calculate_metric_percase(pred, gt):
     pred[pred > 0] = 1
     gt[gt > 0] = 1
     gt[gt <= 0] = 0
-    if pred.sum() > 0:
+
+    # print(pred.shape,gt.shape)
+
+    if pred.sum() > 0 and gt.sum() > 0:
         dice = metric.binary.dc(pred, gt)
         hd95 = metric.binary.hd95(pred, gt)
         return dice, hd95
     else:
+        print("Pred: {} and GT: {}".format(pred.sum(), gt.sum()))
         return 0, 0
 
 
@@ -53,24 +58,30 @@ def padding_in_test(img, ds_rate=16):
     return img, origin_DHW
 
 
-def test_single_volume_ds(image, label, net, classes, patch_size=[256, 256], device="cpu"):
+def test_single_volume_ds(image, label, net, classes, patch_size=[224, 224], device="cpu"):
     image, label = (
         image.squeeze(0).cpu().detach().numpy(),
         label.squeeze(0).cpu().detach().numpy(),
     )
 
-    image, origin_DHW = padding_in_test(image)
+    D, H, W = image.shape
 
-    _Debug.checkImageMatrix({"volume_batch": image, "label_batch": label})
-    
+    image = zoom(image, (1, patch_size[0] / H, patch_size[1] / W), order=0)
+
+    # image, origin_DHW = padding_in_test(image)
+
+    # _Debug.checkImageMatrix({"volume_batch": image, "label_batch": label})
+
     image = image[:, None]
-    input = torch.from_numpy(image).float().to(device)
+    inputs = torch.from_numpy(image).float().to(device)
 
     with torch.no_grad():
-        output_main, _, _, _ = net(input)
-    output_main = output_main[:, :, : origin_DHW[1], : origin_DHW[2]]
-    out = torch.argmax(torch.softmax(output_main, dim=1), dim=1).squeeze(0)
+        output_main, _, _, _ = net(inputs)
+        
+    # output_main = output_main[:, :, : origin_DHW[1], : origin_DHW[2]]
+    out = torch.argmax(output_main, dim=1)
     prediction = out.cpu().detach().numpy()
+    prediction = zoom(prediction, (1, H / patch_size[0], W / patch_size[1]), order=0,)
 
     # prediction = np.zeros_like(label)
     # for ind in range(image.shape[0]):
@@ -85,6 +96,7 @@ def test_single_volume_ds(image, label, net, classes, patch_size=[256, 256], dev
     #         out = out.cpu().detach().numpy()
     #         pred = zoom(out, (x / patch_size[0], y / patch_size[1]), order=0)
     #         prediction[ind] = pred
+    
     metric_list = []
     for i in range(1, classes):
         metric_list.append(calculate_metric_percase(prediction == i, label == i))

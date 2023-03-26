@@ -12,8 +12,7 @@ dirname, filename = os.path.split(os.path.abspath(__file__))
 os.chdir(dirname)
 print("The Current WorkPlace: {}".format(os.getcwd()))
 
-import random
-import sys, json, platform
+import random, sys, json, platform, importlib
 
 import numpy as np
 import torch
@@ -29,11 +28,13 @@ from torchvision import transforms
 from DataSet.Datasetsemiu.dataset import BaseDataSets, RandomGenerator, TwoStreamBatchSampler
 from Untils import losses, ramps
 from Val.val_2d import test_single_volume_ds
-from networks.net_factory import net_factory
+from networks.swin_unetr import SwinUNETR
+from networks.unet import UNet, UNet_DS, UNet_URPC, UNet_CCT
 
 import _Debug
 
 import cv2
+
 cpu_num = 1
 cv2.setNumThreads(cpu_num)
 os.environ["OMP_NUM_THREADS"] = str(cpu_num)
@@ -42,6 +43,7 @@ os.environ["MKL_NUM_THREADS"] = str(cpu_num)
 os.environ["VECLIB_MAXIMUM_THREADS"] = str(cpu_num)
 os.environ["NUMEXPR_NUM_THREADS"] = str(cpu_num)
 torch.set_num_threads(cpu_num)
+
 
 def get_current_consistency_weight(epoch):
     # Consistency ramp-up from https://arxiv.org/abs/1610.02242
@@ -117,11 +119,21 @@ def train(args, snapshot_path):
     info_logger.info("{} iterations per epoch".format(len(trainloader)))
 
     ########## model ##########
-    model = net_factory(net_type=args.model, in_chns=1, class_num=num_classes)
+    if args.model == "SwinUNETR":
+        model = SwinUNETR(
+            img_size=224, out_channels=args.num_classes, in_channels=1, spatial_dims=2
+        )
+    elif args.model == "unet_urpc":
+        model = UNet_URPC(in_chns=1, class_num=args.num_classes)
     model = model.to(args.device)
 
     ########## optimizer ##########
-    optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
+    if args.optim.lower() == 'sgd':
+        optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
+    elif args.optim.lower() == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=base_lr, weight_decay=0.0001)
+    elif args.optim.lower() == 'adamw':
+        optimizer = optim.AdamW(model.parameters(), lr=base_lr, weight_decay=0.0001)
 
     ########## loss function ##########
     kl_distance = nn.KLDivLoss(reduction="none")
@@ -135,13 +147,13 @@ def train(args, snapshot_path):
     for epoch_num in range(max_epoch):
         consistency_weight = get_current_consistency_weight(epoch_num)
 
-        model.train()
         list_loss = []
         list_loss_ce = []
         list_loss_dice = []
         list_loss_consistency = []
 
         for i_batch, sampled_batch in enumerate(trainloader):
+            model.train()
             volume_batch, label_batch = sampled_batch["image"], sampled_batch["label"]
             volume_batch, label_batch = (
                 volume_batch.to(args.device),
@@ -281,15 +293,15 @@ def train(args, snapshot_path):
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr_
 
-            iter_num = iter_num + 1
-
             list_loss.append(loss.item())
             list_loss_ce.append(loss_ce.item())
             list_loss_dice.append(loss_dice.item())
             list_loss_consistency.append(consistency_loss.item())
 
-            if (i_batch + 1) % (len(trainloader) // 4) == 0 or i_batch + 1 == len(trainloader):
-                pass
+            iter_num = iter_num + 1
+
+            # if (i_batch + 1) % (len(trainloader) // 4) == 0 or i_batch + 1 == len(trainloader):
+            # pass
 
             # break
 
@@ -306,25 +318,31 @@ def train(args, snapshot_path):
             )
         )
 
-        if (epoch_num + 1) % 20 != 0:
+        if (epoch_num + 1) % (max_epoch // 100) != 0:
             continue
 
         # validation
         model.eval()
         metric_list = 0.0
+        num_val = 0
         for i_batch, sampled_batch in enumerate(valloader):
+            if sampled_batch["image"].shape[1] == 0:
+                continue
+
             metric_i = test_single_volume_ds(
                 sampled_batch["image"],
                 sampled_batch["label"],
                 model,
+                patch_size=args.patch_size,
                 classes=num_classes,
                 device=args.device,
             )
             metric_list += np.array(metric_i)
+            num_val += 1
 
             # if (i_batch + 1) % (len(valloader) // 4) == 0 or i_batch + 1 == len(valloader):
             #     info_logger.info("val: {}/{}".format(i_batch + 1, len(valloader)))
-        metric_list = metric_list / len(valloader)
+        metric_list = metric_list / num_val
 
         performance = np.mean(metric_list, axis=0)[0]
         mean_hd95 = np.mean(metric_list, axis=0)[1]
@@ -353,76 +371,9 @@ def train(args, snapshot_path):
 
 
 if __name__ == "__main__":
-    # /public/apps/anaconda3/envs/linguoyu/bin/python /public/linguoyu/PythonProgramme/t6_urpc/Trainer/train_urpc4.py
-
-    # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
     parser = argparse.ArgumentParser()
-
-    # sup
-    parser.add_argument("--exp", type=str, default="Sup_T1C", help="Experiment Name")
-    parser.add_argument("--semi_sup", type=bool, default=False)
-
-    # semi_sup
-    # parser.add_argument(
-    #     "--exp", type=str, default="SemiSup_T2_Consistency1", help="Experiment Name"
-    # )
-    # parser.add_argument("--semi_sup", type=bool, default=True)
-
-    # model args
-    parser.add_argument("--model", type=str, default="unet_urpc", help="model_name")
-
-    # training args
-    parser.add_argument(
-        "--max_iterations", type=int, default=9000, help="maximum epoch number to train"
-    )
-    parser.add_argument(
-        "--base_lr", type=float, default=0.01, help="segmentation network learning rate"
-    )
-
-    # dataset args
-    parser.add_argument("--mod", type=str, default="T1C")
-    parser.add_argument("--label_mod_type", type=str, default="T1C_mask")
-    parser.add_argument("--batch_size", type=int, default=8, help="batch_size per gpu")
-    parser.add_argument("--labeled_bs", type=int, default=4, help="labeled_batch_size per gpu")
-    parser.add_argument("--labeled_num", type=int, default=60, help="labeled data")
-    parser.add_argument("--num_classes", type=int, default=2, help="output channel of network")
-    parser.add_argument(
-        "--patch_size", type=list, default=[192, 192], help="patch size of network input"
-    )
-    if platform.system() == "Windows":
-        parser.add_argument(
-            "--img_path",
-            type=str,
-            default="I:/linguoyu/DataSet/NPCICDataset/zhongshan1/005_ToNumpy",
-        )
-        parser.add_argument(
-            "--mask_path",
-            type=str,
-            default="I:/linguoyu/DataSet/NPCICDataset/zhongshan1/803_GT_R_Resample_numpy",
-        )
-    elif platform.system() == "Linux":
-        parser.add_argument(
-            "--img_path",
-            type=str,
-            default="/public/linguoyu/PythonProgramme/DataSet/NPCIC/zhongshan1/005_ToNumpy",
-        )
-        parser.add_argument(
-            "--mask_path",
-            type=str,
-            default="/public/linguoyu/PythonProgramme/DataSet/NPCIC/zhongshan1/803_GT_R_Resample_numpy",
-        )
-
-    # consistency
-    parser.add_argument("--consistency", type=float, default=1.0, help="consistency")
-    parser.add_argument(
-        "--consistency_rampup", type=float, default=100.0, help="consistency_rampup"
-    )
-
-    # other args
-    parser.add_argument(
-        "--deterministic", type=int, default=1, help="whether use deterministic training"
-    )
+    parser.add_argument("--args", type=str, default="Sup_Unet_T2_D6_W1")
+    parser.add_argument("--deterministic", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1337, help="random seed")
     if platform.system() == "Windows":
         parser.add_argument("--device", type=str, default="cpu")
@@ -431,7 +382,15 @@ if __name__ == "__main__":
         parser.add_argument("--device", type=str, default="cuda:2")
         parser.add_argument("--number_worker", type=int, default=0)
 
-    args = parser.parse_args()
+    args_ = parser.parse_args()
+
+    args = importlib.import_module("Trainer.args.{}".format(args_.args)).args
+
+    args.args = args_.args
+    args.deterministic = args_.deterministic
+    args.seed = args_.seed
+    args.device = args_.device
+    args.number_worker = args_.number_worker
 
     if not args.deterministic:
         cudnn.benchmark = True
