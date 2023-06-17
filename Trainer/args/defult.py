@@ -9,7 +9,7 @@ class Args:
 args = Args()
 
 # supervised
-args.exp = "Sup_Swin_T1C"
+args.exp = ""
 args.semi_sup = False
 
 # model

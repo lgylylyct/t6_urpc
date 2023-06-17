@@ -6,7 +6,8 @@ import os, cv2
 import torch
 import re, json
 import pickle as pkl
-import socket
+import socket,platform,random
+
 
 
 def writeJson(data_dict, path):
@@ -255,6 +256,94 @@ def get_host_ip():
 
     return ip
 
+
+
+def getGrid(num):
+    s2 = int(np.ceil(np.sqrt(num)))
+    if num % s2 == 0:
+        s1 = int(num / s2)
+    else:
+        s1 = int(num / s2) + 1
+    return s1, s2
+
+
+def checkImageMatrix(matrix_dict: dict, save_dir=None, single=False):
+    if platform.system() == "Linux" and save_dir is None:
+        return
+
+    for i, (name, matrix) in enumerate(matrix_dict.items()):
+        if not isinstance(matrix, np.ndarray) and not isinstance(matrix, torch.Tensor):
+            continue
+
+        ############## convert to numpy ##############
+        if isinstance(matrix, torch.Tensor):
+            matrix = matrix.clone()
+            matrix = toNumpy(matrix)
+        else:
+            matrix = matrix.copy()
+            matrix = matrix.squeeze()
+
+        ############## if 4D, get the first channel ##############
+        if name.endswith("__C"):
+            if len(matrix.shape) == 5:
+                matrix = matrix[0, ...]
+        else:
+            if len(matrix.shape) == 4:
+                matrix = matrix[0, ...]
+
+        ############## if matrix is label, use jet cmap ##############
+        is_jet = isinstance(matrix, torch.LongTensor) or isinstance(matrix, np.int) or matrix.max() == 10
+
+        ############## imshow ##############
+        fig = plt.figure(figsize=(20, 10), num=name)
+
+        if len(matrix.shape) == 3 and isinstance(single, bool) and single:
+            matrix = matrix[random.randint(0, len(matrix) - 1)]
+        elif len(matrix.shape) == 3 and str(single).isnumeric():
+            if single < (len(matrix) - 1):
+                matrix = matrix[single]
+            else:
+                matrix = matrix[0]
+                print("single_index{} > len(matrix){}, so return matrix[0]".format(single, len(matrix)))
+
+        if name.endswith("__C"):
+            if len(matrix.shape) == 3:
+                ax = fig.subplots()
+                ax.set_title(name)
+                ax.set_axis_off()
+                ax.imshow(matrix)
+
+            elif len(matrix.shape) == 4:
+                s1, s2 = getGrid(len(matrix))
+                axs = fig.subplots(s1, s2)
+                for j, (ax, matrix_j) in enumerate(zip(axs.reshape(-1), matrix)):
+                    ax.set_title(name)
+                    ax.imshow(matrix_j)
+                for ax in axs.reshape(-1):
+                    ax.set_axis_off()
+        else:
+            if len(matrix.shape) == 2:
+                ax = fig.subplots()
+                ax.set_title(name)
+                ax.set_axis_off()
+                ax.imshow(matrix, cmap="jet" if is_jet else "gray")
+
+            elif len(matrix.shape) == 3:
+                s1, s2 = getGrid(len(matrix))
+                axs = fig.subplots(s1, s2)
+                for j, (ax, matrix_j) in enumerate(zip(axs.reshape(-1), matrix)):
+                    ax.set_title(name)
+                    ax.imshow(matrix_j, cmap="jet" if is_jet else "gray")
+                for ax in axs.reshape(-1):
+                    ax.set_axis_off()
+
+        if save_dir is not None:
+            makeDirs(save_dir)
+            fig.savefig(os.path.join(save_dir, name + ".png"))
+            plt.close("all")
+
+    if save_dir is None:
+        plt.show()
 
 if __name__ == "__main__":
     df = None

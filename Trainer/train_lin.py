@@ -31,7 +31,7 @@ from Val.val_2d import test_single_volume_ds
 from networks.swin_unetr import SwinUNETR
 from networks.unet import UNet, UNet_DS, UNet_URPC, UNet_CCT
 
-import _Debug
+import Untils.Utils_Lin as U
 
 import cv2
 
@@ -53,8 +53,7 @@ def get_current_consistency_weight(epoch):
 def train(args, snapshot_path):
     # set infomation logger
     info_logger_path = os.path.join(snapshot_path, "info.log")
-
-    info_logger = logging.Logger("GFBExp")
+    info_logger = logging.Logger("A")
     info_logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     print_headler = logging.StreamHandler()
@@ -65,8 +64,8 @@ def train(args, snapshot_path):
     file_headler.setFormatter(formatter)
     info_logger.addHandler(print_headler)
     info_logger.addHandler(file_headler)
-
     print("information of logger:", info_logger_path)
+    
     info_logger.info("is semi-supervised exp: {}".format(args.semi_sup))
 
     ######## arg ##########
@@ -130,10 +129,15 @@ def train(args, snapshot_path):
     ########## optimizer ##########
     if args.optim.lower() == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
+        info_logger.info("use SGD optimizer")
+        
     elif args.optim.lower() == 'adam':
         optimizer = optim.Adam(model.parameters(), lr=base_lr, weight_decay=0.0001)
+        info_logger.info("use Adam optimizer")
+        
     elif args.optim.lower() == 'adamw':
         optimizer = optim.AdamW(model.parameters(), lr=base_lr, weight_decay=0.0001)
+        info_logger.info("use AdamW optimizer")
 
     ########## loss function ##########
     kl_distance = nn.KLDivLoss(reduction="none")
@@ -159,7 +163,7 @@ def train(args, snapshot_path):
                 volume_batch.to(args.device),
                 label_batch.to(args.device),
             )
-            # _Debug.checkImageMatrix({"volume_batch": volume_batch, "label_batch": label_batch})
+            # U.checkImageMatrix({"volume_batch": volume_batch, "label_batch": label_batch})
 
             outputs, outputs_aux1, outputs_aux2, outputs_aux3 = model(volume_batch)
             outputs_soft = torch.softmax(outputs, dim=1)
@@ -372,7 +376,7 @@ def train(args, snapshot_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--args", type=str, default="Sup_Unet_T2_D6_W1")
+    parser.add_argument("--args", type=str, default="Sup_Unet_T2_D6_W1_AdamW")
     parser.add_argument("--deterministic", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1337, help="random seed")
     if platform.system() == "Windows":
@@ -387,6 +391,7 @@ if __name__ == "__main__":
     args = importlib.import_module("Trainer.args.{}".format(args_.args)).args
 
     args.args = args_.args
+    args.exp = args_.args
     args.deterministic = args_.deterministic
     args.seed = args_.seed
     args.device = args_.device
